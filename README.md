@@ -302,7 +302,7 @@ Build a production-grade video processing system (like YouTube's backend)
 User uploads video (e.g., "vacation.mp4")
         ↓
 System automatically:
-  1. Transcodes to multiple qualities (1080p, 720p, 480p) in HLS format
+  1. Transcodes to multiple qualities (1080p, 720p, 480p) in HLS format (using a custom C++/libav engine for transcoding)
   2. Generates thumbnails (preview images)
   3. Extracts metadata (duration, codec, bitrate)
   4. Stores everything in S3
@@ -353,7 +353,7 @@ User can watch processed video in your HLS player (from Project 3!)
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │  Transcode   │ │  Thumbnail   │ │   Metadata   │ ← Workers process in parallel
 │   Workers    │ │   Workers    │ │   Workers    │
-│  (FFmpeg)    │ │  (PIL)       │ │  (FFprobe)   │
+│  (C++/libav) │ │  (PIL)       │ │  (FFprobe)   │
 └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
        │                │                │
        └────────────────┴────────────────┘
@@ -376,7 +376,7 @@ User can watch processed video in your HLS player (from Project 3!)
 - REST API for video uploads
 - Job queue management (RabbitMQ)
 - Multiple worker types:
-  - **Transcode workers**: Generate HLS with 1080p, 720p, 480p versions
+  - **Transcode workers**: Generate HLS with 1080p, 720p, 480p versions with own media pipeline
   - **Thumbnail workers**: Extract preview images (at 10s, 30s, 60s)
   - **Metadata workers**: Extract duration, codec, bitrate, resolution
 - S3/MinIO storage integration
@@ -421,41 +421,52 @@ User can watch processed video in your HLS player (from Project 3!)
 ```
 distributed-video-pipeline/
 ├── README.md
-├── docker-compose.yml          # All services defined here
+├── docker-compose.yml              # All services defined here
 ├── .env.example
 ├── services/
 │   ├── api/
-│   │   ├── app.py              # Upload API + web interface
-│   │   ├── models.py           # Job schemas
-│   │   ├── database.py         # PostgreSQL client
+│   │   ├── app.py                  # Upload API + web interface
+│   │   ├── models.py               # Job schemas
+│   │   ├── database.py             # PostgreSQL client
 │   │   ├── templates/
-│   │   │   ├── upload.html     # Upload page
-│   │   │   ├── gallery.html    # Video gallery
-│   │   │   └── player.html     # HLS player (from Project 3!)
+│   │   │   ├── upload.html         # Upload page
+│   │   │   ├── gallery.html        # Video gallery
+│   │   │   └── player.html         # HLS player (from Project 3!)
 │   │   └── requirements.txt
 │   ├── workers/
-│   │   ├── base_worker.py      # Base worker with retry logic
-│   │   ├── transcode_worker.py # FFmpeg transcoding
-│   │   ├── thumbnail_worker.py # Image extraction
-│   │   ├── metadata_worker.py  # Metadata extraction
+│   │   ├── base_worker.py          # Base worker with retry logic
+│   │   ├── transcode_worker.py     # Python wrapper that invokes C++ libav engine
+│   │   ├── thumbnail_worker.py     # Image extraction (Python + FFmpeg/Pillow)
+│   │   ├── metadata_worker.py      # Metadata extraction (Python + FFprobe)
 │   │   └── requirements.txt
 │   └── monitoring/
 │       ├── prometheus.yml
 │       └── grafana/
 │           └── dashboards/
+├── engine/
+│   ├── CMakeLists.txt              # Build config for C++ libav engine
+│   ├── include/
+│   │   └── transcoder.hpp          # Public interface for the engine
+│   └── src/
+│       ├── main.cpp                # CLI entry: input file → HLS outputs
+│       ├── demux_decode.cpp        # Uses libavformat/libavcodec
+│       ├── scale_filter.cpp        # Uses libswscale / optional filters
+│       └── encode_mux_hls.cpp      # Encodes and writes HLS segments/playlists
 ├── shared/
-│   ├── queue_client.py         # RabbitMQ wrapper
-│   ├── storage_client.py       # MinIO/S3 client
-│   └── config.py               # Shared configuration
+│   ├── queue_client.py             # RabbitMQ wrapper
+│   ├── storage_client.py           # MinIO/S3 client
+│   └── config.py                   # Shared configuration
 ├── tests/
 │   ├── integration/
-│   │   └── test_pipeline.py    # End-to-end tests
+│   │   └── test_pipeline.py        # End-to-end tests
 │   └── load/
-│       └── stress_test.py      # Load testing with locust
+│       └── stress_test.py          # Load testing with locust
 └── docs/
-    ├── ARCHITECTURE.md          # System design + diagrams
-    ├── SETUP.md                 # Installation guide
-    └── OPERATIONS.md            # Troubleshooting + scaling
+    ├── ARCHITECTURE.md             # System design + diagrams
+    ├── ENGINE.md                   # C++ libav engine internals + API
+    ├── SETUP.md                    # Installation + build guide
+    └── OPERATIONS.md               # Troubleshooting + scaling + profiling
+
 ```
 
 #### Key Implementation Components
@@ -468,13 +479,28 @@ distributed-video-pipeline/
 - Sends failed jobs (after max retries) to dead letter queue
 - Sends heartbeat signals every 30 seconds
 
-**2. Transcode Worker**
+**2.1. Transcode Worker**
+- Receives job from RabbitMQ
 - Downloads original video from S3
-- Uses FFmpeg to generate HLS output with 3 quality levels
-- Creates master playlist, variant playlists, and segments
-- Uploads all HLS files (playlists + segments) to S3
-- Publishes job to thumbnail queue when complete
-- Handles FFmpeg errors (corrupt files, unsupported codecs)
+- Invokes the C++ libav engine binary (e.g., ./engine/transcoder) with:
+   - input path
+   - output directory
+   - target resolutions/bitrates
+- Checks exit status, logs errors, and publishes next job (thumbnail) if successful
+- Handles retries & DLQ via base_worker.py
+
+**2.2. C++17 libav engine (engine/)**
+
+- Uses avformat_open_input / av_read_frame to demux
+- Uses avcodec_send_packet / avcodec_receive_frame to decode
+- Uses sws_scale (or filters) to scale to 1080p / 720p / 480p
+- Creates encoders for each output variant (e.g., libx264)
+- Writes encoded packets into HLS segments and playlists:
+- master.m3u8
+- 1080p/index.m3u8, segment files
+- 720p/index.m3u8, segment files
+- 480p/index.m3u8, segment files
+- Handles FFmpeg errors gracefully and prints logs for troubleshooting
 
 **3. Thumbnail Worker**
 - Downloads video from S3
@@ -629,6 +655,7 @@ Distributed Video Processing Pipeline | Python, RabbitMQ, FFmpeg, Docker, Postgr
 [GitHub] [Architecture Doc] [Demo Video]
 • Architected fault-tolerant distributed system processing 100+ videos with <1% failure rate
 • Designed microservices architecture with message queue (RabbitMQ), worker pools, and S3 storage
+• Implemented a custom C++17 transcode engine using FFmpeg libavformat/libavcodec/libswscale to generate HLS multi-bitrate outputs (1080p/720p/480p) with master/variant playlists.
 • Implemented automatic retry logic with exponential backoff and dead letter queue handling
 • Built real-time monitoring dashboard with Prometheus/Grafana tracking throughput and errors
 • Achieved 99.9% uptime during 24-hour load testing with horizontal worker scaling (10+ instances)
