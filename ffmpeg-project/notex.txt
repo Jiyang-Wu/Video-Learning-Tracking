@@ -1,0 +1,21 @@
+AVFormatContext: C struct holding media information
+	- Information about the format (container)
+	- Need to be allocated via avformat_alloc_context()
+	- with a given filename (f), initialize with avformat_open_input(&pFormatCOntext, f, NULL, NULL)
+	- useful entries: duration, iformat, nb_streams, steams (array ----> AVStream objects)
+	- each AVStream object has a "codecvpar" entry ----> AVCodecParameters -----> holding codec property of the stream (audio stream, video stream)
+	- we can find AVCodec by running avcodec_find_decoder(AVCodecParameters->codec_id)
+	- AVCodecParameters also has entry of codec_type telling media type (audio or video)
+	- for video, it has weight and height, for audio, it has channels and samples
+	- in general, AVCodec object has long_name and id and bit_rate entries
+
+
+AVCodecContext: context for encoding/decoding process
+	- AVCodecContext* = avcodec_alloc_context3(AVCodec)
+	- avcodec_parameters_to_context(AVCodecContext, AVCodecParameters)
+	- avcodec_open2(AVCodecContext, AVCodec, NULL)
+	- allocate AVPacket and AVFrame using av_{property}_alloc()
+	- av_read_frame to obtain packets, avcodec_send_packet to send packets to the decoder via context, avcodec_receive_frame to load raw data frame from decoder through context
+	- each frame has pts, pict_type, key_frame, etc (also frame_number from context object)
+	- save_gray_frame(pFrame->data[0], pFrame->linesize[0], pFrame->width, pFrame->height, frame_filename) ----> implement yourself
+
