@@ -74,17 +74,20 @@ int main(int argc, const char *argv[])
 			av_packet_unref(packet);
 			continue;
 		}
+		avcodec_send_packet(codec_context, packet);
+		int ret = avcodec_receive_frame(codec_context, frame);
+		if (ret == AVERROR(EAGAIN)) {
+			av_packet_unref(packet);
+			continue;	
+		}
+		char frame_filename[1024];
 		frames_to_process--;
 		if (frames_to_process == 0) break;
-		avcodec_send_packet(codec_context, packet);
-		avcodec_receive_frame(codec_context, frame);
-		char frame_filename[1024];
 		snprintf(frame_filename, sizeof(frame_filename), "%s-%d.pgm", "frame", frames_to_process);
 		print_luma_frame(frame->data[0], frame->linesize[0], frame->width, frame->height, frame_filename);
 
 		av_packet_unref(packet);
 	}
-	av_packet_unref(packet);
 
 
 
