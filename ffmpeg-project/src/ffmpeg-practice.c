@@ -6,12 +6,24 @@
 #include <string.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 static void logging(const char*fmt)
 {
 	fprintf(stderr, "LOG: %s \n", fmt);
 }
 
+int ensure_dir(const char *path)
+{
+	if (mkdir(path, 0755) == -1) {
+		if (errno != EEXIST) {
+			perror("mkdir");
+			return -1;
+		}
+	}
+	return 0;
+}
 //sample.pgm
 static void print_luma_frame(unsigned char *buf, int wrap, int xsize, int ysize, char* filename)
 {
@@ -26,22 +38,17 @@ static void print_luma_frame(unsigned char *buf, int wrap, int xsize, int ysize,
 	fclose(f);
 }
 
-int main(int argc, const char *argv[])
+//Task 0: Extracting a single frames from the bunny video and display luma channel
+int extract_luma_frame(const char *file_name)
 {
-	if (argc < 2){
-		printf("Specify media file.\n");
-		return -1;
-	}
 
-	const char *file_name = argv[1];
-	
 	AVFormatContext *pFormatContext = avformat_alloc_context();
 	if (!pFormatContext) {
 		logging("ERROR could not allocate memory for Format Context");
 		return -1;
 	}
 
-	if (avformat_open_input(&pFormatContext, argv[1], NULL, NULL) != 0) {
+	if (avformat_open_input(&pFormatContext, file_name, NULL, NULL) != 0) {
 		logging("ERROR could not open the file");
 		return -1;
 	}
@@ -69,6 +76,7 @@ int main(int argc, const char *argv[])
 	AVFrame *frame = av_frame_alloc();
 
 	int frames_to_process = 8;
+	ensure_dir("./task0");
 	while (av_read_frame(pFormatContext, packet) >= 0){
 		if (packet->stream_index != video_index){
 			av_packet_unref(packet);
@@ -83,7 +91,7 @@ int main(int argc, const char *argv[])
 		char frame_filename[1024];
 		frames_to_process--;
 		if (frames_to_process == 0) break;
-		snprintf(frame_filename, sizeof(frame_filename), "%s-%d.pgm", "frame", frames_to_process);
+		snprintf(frame_filename, sizeof(frame_filename), "./task0/%s-%d.pgm", "frame", frames_to_process);
 		print_luma_frame(frame->data[0], frame->linesize[0], frame->width, frame->height, frame_filename);
 
 		av_packet_unref(packet);
@@ -99,6 +107,13 @@ int main(int argc, const char *argv[])
 	
 	return 0;
 
+}
+
+int main(int argc, const char *argv[])
+{
+	const char *file_name = argv[1];
+
+	extract_luma_frame(file_name);
 }
 
 
