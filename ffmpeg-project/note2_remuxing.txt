@@ -1,0 +1,41 @@
+Remuxing is the process of shifting between containers/formats without encoding/decoding/changing codec.
+
+ffmpeg input.mp4 -c copy output.ts
+
+Processing a single video takes multiple steps across different layers
+
+Protocol layer --(read input)--> format layer --(demuxing)-->codec layer --(decoding)--> pixel layer --(filtering e.g. resizing)--> codec layer --(encoding)--> format layer --(muxing)--> protocol layer (as output) 
+
+implementation using libav:
+start two AVFormatContexts (one for input, one for output)
+open input file and check stream info (with avformat_find_stream_info)
+
+use avformat_alloc_output_context2(AVFormatContext*, NULL, NULL, fout_filename) to allocate context for the output format
+
+av_calloc(number_streams, sizeof(int))
+
+loop through the streams, and do the following if the stream is AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO, AVMEDIA_TYPE_SUBTITLE:
+
+create a new stream using avformat_new_stream(output_format_context, NULL); and then avcodec_parameters_copy(target, source) to copy codec info into the new stream
+
+up to here: stream mapping done and new codec is set
+
+check if AVFormatContext->oformat->flags indicates no-file
+if not (meaning uese a file), open the format context's IO context (->pb) using avio_open()
+
+initailze a AVDictionary *
+write the file header information, with avformat_write_header(ctx, opts)
+
+****curcial*****
+write data streams
+setup input stream and output stream
+read a packet from input
+set input stream to the packet's stream
+check if packet stream is a valid stream / packet stream does not match an output stream
+set packet stream index to output stream index
+set output stream to the corresponding index
+rescale the timebase (pts, dts, duration) of the data stream using av_rescale_q_rnd and av_rescale_q
+set packet pos to -1
+write packet into output stream using av_interleaved_write_frame
+always unref the packet before next iteration
+finish writing with av_write_trailer
