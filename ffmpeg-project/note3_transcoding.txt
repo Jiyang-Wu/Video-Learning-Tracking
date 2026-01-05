@@ -1,0 +1,12 @@
+main objective: converting video in H264 to H265
+
+pre-loading step
+
+- open up input file into input format_ctx
+- for each of the data stream, open up the corresponding av_codec_context
+- open up output file into output format_ctx
+- as usual, map streams info, open up IO context, timebase rescaling and interleaved_write
+
+Actual Encoding steps:
+
+ 

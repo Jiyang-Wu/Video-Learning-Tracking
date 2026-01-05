@@ -216,6 +216,40 @@ end:
 
 }
 
+// Task 3: Adding transcoding feature that converts the incoming file (in sample, H264) into H265
+int transcode(const char *in_file, const char *out_file) 
+{
+	AVFormatContext *in_format_ctx = NULL, *out_format_ctx = NULL;
+	AVPacket *in_packet = NULL;
+	
+	if (avformat_open_input(&in_format_ctx, in_file, NULL, NULL) != 0) {
+		fprintf(stderr, "Unable to open input format context");
+		goto end;					
+	}
+	if (avformat_find_stream_info(in_format_ctx, NULL) < 0) {
+		fprintf(stderr, "Unable to find stream info");
+		goto end;
+	}
+	if (avformat_alloc_output_context2(&out_format_ctx, NULL, NULL, out_file) != 0) {
+		fprintf(stderr, "Unable to open output format context");
+		goto end;
+	}	
+
+	for (int i = 0; i < in_format_ctx->nb_streams; ++i) {
+		if (in_format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+			//TODO: Add video stream handling info (transcoding steps)
+		}
+		//TODO: For non-video streams, simply send original data packet
+	}
+
+//TODO
+// Close input_format_ctx, out_format_ctx
+// in_packet
+end:
+	avformat_close_input(&in_format_ctx);
+	return 0;	
+}
+
 int main(int argc, const char *argv[])
 {
 
