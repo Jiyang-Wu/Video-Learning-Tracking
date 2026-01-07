@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <libavutil/timestamp.h>
+#include <libavutil/opt.h>
 
 static void logging(const char *fmt)
 {
@@ -247,6 +248,12 @@ int transcode(const char *in_file, const char *out_file)
 	AVFormatContext *in_format_ctx = NULL, *out_format_ctx = NULL;
 	AVPacket *in_packet = NULL;
 	int video_stream_idx = -1;
+	AVCodecContext *video_encoder_ctx = NULL, *video_decoder_ctx = NULL;
+	AVCodec *video_encoder_codec = NULL, *video_decoder_codec = NULL;
+	char *encoder_name = "libx265";
+	char *encoder_priv_key = "x265-params";
+	char *encoder_priv_val = "keyint=60:min-keyint=60:scenecut=0";
+
 	
 	open_input_format_ctx(in_file, &in_format_ctx);
 	open_out_format_ctx(out_file, &out_format_ctx);	
@@ -262,8 +269,55 @@ int transcode(const char *in_file, const char *out_file)
 	}
 
 	in_packet = av_packet_alloc();
+	
+	for (int i = 0; i < in_format_ctx->nb_streams; ++i) {
+		AVStream *out_stream = avformat_new_stream(out_format_ctx, NULL);
+		if (!out_stream) {
+			fprintf(stderr, "Failed to create output stream %d", i);
+			goto end;
+		}
+		if (i != video_stream_idx) {
+			avcodec_parameters_copy(out_stream->codecpar, in_format_ctx->streams[i]->codecpar);
+			fprintf(stderr, "default timebase before manually setting is %d over %d", out_stream->time_base.num, out_stream->time_base.den);
+			out_stream->time_base = in_format_ctx->streams[i]->time_base;
+			fprintf(stderr, "default timebase after manually setting is %d over %d", out_stream->time_base.num, out_stream->time_base.den);
+		} else {
+			video_encoder_codec = avcodec_find_encoder_by_name(encoder_name);
+			video_encoder_ctx = avcodec_alloc_context3(video_encoder_codec);
+				
+			video_decoder_codec = avcodec_find_decoder(in_format_ctx->streams[i]->codecpar->codec_id);
+			video_decoder_ctx = avcodec_alloc_context3(video_decoder_codec);
+			avcodec_parameters_to_context(video_decoder_ctx, in_format_ctx->streams[i]->codecpar);
+			avcodec_open2(video_decoder_ctx, video_decoder_codec, NULL);
+			
+			// codec parameters
+			av_opt_set(video_encoder_ctx->priv_data, encoder_priv_key, encoder_priv_val, 0);
+			video_encoder_ctx->height = video_decoder_ctx->height;
+			video_encoder_ctx->width = video_decoder_ctx->width;
+			video_encoder_ctx->pix_fmt = video_encoder_codec->pix_fmts[0];
+			// control rate
+			video_encoder_ctx->bit_rate = 2 * 1000 * 1000;
+			video_encoder_ctx->rc_buffer_size = 4 * 1000 * 1000;
+			video_encoder_ctx->rc_max_rate = 2 * 1000 * 1000;
+			video_encoder_ctx->rc_min_rate = 2.5 * 1000 * 1000;
+			// time base
+			video_encoder_ctx->time_base = av_inv_q(av_guess_frame_rate(in_format_ctx, in_format_ctx->streams[i], NULL));
+			
+			out_stream->time_base = video_encoder_ctx->time_base;
+			avcodec_open2(video_encoder_ctx, video_encoder_codec, NULL);
+			avcodec_parameters_from_context(out_stream->codecpar, video_encoder_ctx);
+
+		}
+	}
+	/*
+		after the loop, both encoder and decoder contexts should be opened up and loaded with corresponding codecs
+		the output format context should be ready with all streams
+		video stream in output format context should be using the correct parameters from decoder context
+		NEXT: strating reading frames and process them
+	*/
+
 	while (av_read_frame(in_format_ctx, in_packet) == 0) {
-		
+
 	}
 	// Demuxing: read packet of info from the input format context, only decode if it belongs to the video stream
 	// Decoding: if packet is from video stream, make it into full frame and trigger re-coding only after a full frame is assembled
