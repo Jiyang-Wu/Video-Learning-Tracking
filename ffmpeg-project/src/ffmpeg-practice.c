@@ -10,7 +10,7 @@
 #include <errno.h>
 #include <libavutil/timestamp.h>
 
-static void logging(const char*fmt)
+static void logging(const char *fmt)
 {
 	fprintf(stderr, "LOG: %s \n", fmt);
 }
@@ -192,6 +192,8 @@ int remux(const char *inFile, const char *outFile)
 		out_stream = outFormatContext->streams[stream_list[in_stream->index]];
 		av_packet->stream_index = out_stream->index;	
 
+		fprintf(stdout, "input timebase is %d over %d\n", in_stream->time_base.num, in_stream->time_base.den);
+		fprintf(stdout, "output timebase is %d over %d\n", out_stream->time_base.num, out_stream->time_base.den);
 		av_packet->pts = av_rescale_q_rnd(av_packet->pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 		av_packet->dts = av_rescale_q_rnd(av_packet->dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 		av_packet->duration = av_rescale_q(av_packet->duration, in_stream->time_base, out_stream->time_base);
@@ -216,31 +218,58 @@ end:
 
 }
 
+// Helper functions modualizing specific tasks
+int open_input_format_ctx(const char *in_file_name, AVFormatContext **in_format_ctx) 
+{
+	if (avformat_open_input(in_format_ctx, in_file_name, NULL, NULL) != 0) {
+		fprintf(stderr, "Unable to open input format context");
+		return -1;	
+	}
+	if (avformat_find_stream_info(*in_format_ctx, NULL) < 0) {
+		fprintf(stderr, "Unable to find stream info");
+		return -1;
+	}
+	return 0;	
+}
+
+int open_out_format_ctx(const char *out_file_name, AVFormatContext **out_format_ctx) 
+{
+	if (avformat_alloc_output_context2(&out_format_ctx, NULL, NULL, out_file_name) != 0) {
+		fprintf(stderr, "Unable to open output format context");
+		return -1;
+	}	
+	return 0;
+}
+
 // Task 3: Adding transcoding feature that converts the incoming file (in sample, H264) into H265
 int transcode(const char *in_file, const char *out_file) 
 {
 	AVFormatContext *in_format_ctx = NULL, *out_format_ctx = NULL;
 	AVPacket *in_packet = NULL;
+	int video_stream_idx = -1;
 	
-	if (avformat_open_input(&in_format_ctx, in_file, NULL, NULL) != 0) {
-		fprintf(stderr, "Unable to open input format context");
-		goto end;					
-	}
-	if (avformat_find_stream_info(in_format_ctx, NULL) < 0) {
-		fprintf(stderr, "Unable to find stream info");
-		goto end;
-	}
-	if (avformat_alloc_output_context2(&out_format_ctx, NULL, NULL, out_file) != 0) {
-		fprintf(stderr, "Unable to open output format context");
-		goto end;
-	}	
+	open_input_format_ctx(in_file, &in_format_ctx);
+	open_out_format_ctx(out_file, &out_format_ctx);	
 
 	for (int i = 0; i < in_format_ctx->nb_streams; ++i) {
 		if (in_format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-			//TODO: Add video stream handling info (transcoding steps)
+			video_stream_idx = i;
 		}
-		//TODO: For non-video streams, simply send original data packet
 	}
+	if (video_stream_idx == -1) {
+		fprintf(stderr, "No video stream found");
+		goto end;
+	}
+
+	in_packet = av_packet_alloc();
+	while (av_read_frame(in_format_ctx, in_packet) == 0) {
+		
+	}
+	// Demuxing: read packet of info from the input format context, only decode if it belongs to the video stream
+	// Decoding: if packet is from video stream, make it into full frame and trigger re-coding only after a full frame is assembled
+	// Encoding: TODO
+	// Muxing: write timebase synced packets back to the output frame context 
+		
 
 //TODO
 // Close input_format_ctx, out_format_ctx
