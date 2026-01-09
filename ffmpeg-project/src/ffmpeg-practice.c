@@ -235,7 +235,7 @@ int open_input_format_ctx(const char *in_file_name, AVFormatContext **in_format_
 
 int open_out_format_ctx(const char *out_file_name, AVFormatContext **out_format_ctx) 
 {
-	if (avformat_alloc_output_context2(&out_format_ctx, NULL, NULL, out_file_name) != 0) {
+	if (avformat_alloc_output_context2(out_format_ctx, NULL, NULL, out_file_name) != 0) {
 		fprintf(stderr, "Unable to open output format context");
 		return -1;
 	}	
@@ -257,6 +257,14 @@ int transcode(const char *in_file, const char *out_file)
 	
 	open_input_format_ctx(in_file, &in_format_ctx);
 	open_out_format_ctx(out_file, &out_format_ctx);	
+
+	
+	if (!(out_format_ctx->oformat->flags & AVFMT_NOFILE)) {
+		if (avio_open(&out_format_ctx->pb, out_file, AVIO_FLAG_WRITE) < 0) {
+			logging("unable to open output file for write");
+			goto end;
+		}
+	}
 
 	for (int i = 0; i < in_format_ctx->nb_streams; ++i) {
 		if (in_format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -309,6 +317,7 @@ int transcode(const char *in_file, const char *out_file)
 
 		}
 	}
+	avformat_write_header(out_format_ctx, NULL);
 	/*
 		after the loop, both encoder and decoder contexts should be opened up and loaded with corresponding codecs
 		the output format context should be ready with all streams
@@ -338,16 +347,29 @@ int transcode(const char *in_file, const char *out_file)
 			}
 			frame->pts = av_rescale_q_rnd(frame->pts, in_format_ctx->streams[video_stream_idx]->time_base, video_encoder_ctx->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
 			avcodec_send_frame(video_encoder_ctx, frame);
-			ret = avcodec_receive_packet(video_encoder_ctx, video_out_packet);
-			if (ret == AVERROR(EAGAIN)) {
-				av_packet_unref(in_packet);
-				av_frame_unref(frame);
-				continue;
+			while (avcodec_receive_packet(video_encoder_ctx, video_out_packet) == 0) {
+				video_out_packet->stream_index = video_stream_idx;
+				av_interleaved_write_frame(out_format_ctx, video_out_packet);
+				av_packet_unref(video_out_packet);
 			}
-			av_interleaved_write_frame(out_format_ctx, video_out_packet);
-
+			av_packet_unref(in_packet);
+			av_frame_unref(frame);
 		}
 	}
+	// flush leftover frames
+	avcodec_send_packet(video_decoder_ctx, NULL);
+	while (avcodec_receive_frame(video_decoder_ctx, frame)) {
+		frame->pts = av_rescale_q_rnd(frame->pts, in_format_ctx->streams[video_stream_idx]->time_base, video_encoder_ctx->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		avcodec_send_frame(video_encoder_ctx, frame);
+		av_frame_unref(frame);
+	}
+	avcodec_send_frame(video_encoder_ctx, NULL);
+	while (avcodec_receive_packet(video_encoder_ctx, video_out_packet) == 0) {
+		av_interleaved_write_frame(out_format_ctx, video_out_packet);
+		av_packet_unref(video_out_packet);
+	}
+		
+	av_write_trailer(out_format_ctx);
 	// Demuxing: read packet of info from the input format context, only decode if it belongs to the video stream
 	// Decoding: if packet is from video stream, make it into full frame and trigger re-coding only after a full frame is assembled
 	// Encoding: TODO
@@ -359,6 +381,16 @@ int transcode(const char *in_file, const char *out_file)
 // in_packet
 end:
 	avformat_close_input(&in_format_ctx);
+	if (out_format_ctx && !(out_format_ctx->oformat->flags & AVFMT_NOFILE)) {
+		avio_closep(&out_format_ctx->pb);
+	}
+	avformat_free_context(out_format_ctx);
+	av_packet_free(&in_packet);
+	av_packet_free(&video_out_packet);
+	av_frame_free(&frame);
+	avcodec_free_context(&video_decoder_ctx);
+	avcodec_free_context(&video_encoder_ctx);
+	
 	return 0;	
 }
 
@@ -374,6 +406,11 @@ int main(int argc, const char *argv[])
 		const char *in_file_name = argv[2];
 		const char *out_file_name = argv[3];
 		remux(in_file_name, out_file_name);
+	}
+	if (task_num == 3) {
+		const char *in_file_name = argv[2];
+		const char *out_file_name = argv[3];
+		transcode(in_file_name, out_file_name);
 	}
 	return 0;
 }
