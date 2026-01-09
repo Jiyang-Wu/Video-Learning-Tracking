@@ -246,7 +246,7 @@ int open_out_format_ctx(const char *out_file_name, AVFormatContext **out_format_
 int transcode(const char *in_file, const char *out_file) 
 {
 	AVFormatContext *in_format_ctx = NULL, *out_format_ctx = NULL;
-	AVPacket *in_packet = NULL;
+	AVPacket *in_packet = NULL, *video_out_packet = NULL;
 	int video_stream_idx = -1;
 	AVCodecContext *video_encoder_ctx = NULL, *video_decoder_ctx = NULL;
 	AVCodec *video_encoder_codec = NULL, *video_decoder_codec = NULL;
@@ -268,7 +268,6 @@ int transcode(const char *in_file, const char *out_file)
 		goto end;
 	}
 
-	in_packet = av_packet_alloc();
 	
 	for (int i = 0; i < in_format_ctx->nb_streams; ++i) {
 		AVStream *out_stream = avformat_new_stream(out_format_ctx, NULL);
@@ -289,6 +288,7 @@ int transcode(const char *in_file, const char *out_file)
 			video_decoder_ctx = avcodec_alloc_context3(video_decoder_codec);
 			avcodec_parameters_to_context(video_decoder_ctx, in_format_ctx->streams[i]->codecpar);
 			avcodec_open2(video_decoder_ctx, video_decoder_codec, NULL);
+			video_decoder_ctx->time_base = in_format_ctx->streams[i]->time_base;
 			
 			// codec parameters
 			av_opt_set(video_encoder_ctx->priv_data, encoder_priv_key, encoder_priv_val, 0);
@@ -300,7 +300,7 @@ int transcode(const char *in_file, const char *out_file)
 			video_encoder_ctx->rc_buffer_size = 4 * 1000 * 1000;
 			video_encoder_ctx->rc_max_rate = 2 * 1000 * 1000;
 			video_encoder_ctx->rc_min_rate = 2.5 * 1000 * 1000;
-			// time base
+			// time base is based fixed to 1/FPS, enforcing CRF
 			video_encoder_ctx->time_base = av_inv_q(av_guess_frame_rate(in_format_ctx, in_format_ctx->streams[i], NULL));
 			
 			out_stream->time_base = video_encoder_ctx->time_base;
@@ -315,9 +315,38 @@ int transcode(const char *in_file, const char *out_file)
 		video stream in output format context should be using the correct parameters from decoder context
 		NEXT: strating reading frames and process them
 	*/
+	AVFrame *frame = av_frame_alloc();
+	in_packet = av_packet_alloc();
+	video_out_packet = av_packet_alloc();
+	while (av_read_frame(in_format_ctx, in_packet) >= 0) {
+		// if not video frame, directly remux (timebase is unified, so not timebase tuning required)				
+		if (in_packet->stream_index != video_stream_idx) 
+		{
+			in_packet->pos = -1;
+			av_interleaved_write_frame(out_format_ctx, in_packet);
+			av_packet_unref(in_packet);
+			continue;
+		} 
+		else
+		{
+			//if is video frame, we feed it into the decoder and attempt to retrieve one frame
+			avcodec_send_packet(video_decoder_ctx, in_packet);
+			int ret = avcodec_receive_frame(video_decoder_ctx, frame);
+			if (ret == AVERROR(EAGAIN)) {
+				av_packet_unref(in_packet);
+				continue;
+			}
+			frame->pts = av_rescale_q_rnd(frame->pts, in_format_ctx->streams[video_stream_idx]->time_base, video_encoder_ctx->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+			avcodec_send_frame(video_encoder_ctx, frame);
+			ret = avcodec_receive_packet(video_encoder_ctx, video_out_packet);
+			if (ret == AVERROR(EAGAIN)) {
+				av_packet_unref(in_packet);
+				av_frame_unref(frame);
+				continue;
+			}
+			av_interleaved_write_frame(out_format_ctx, video_out_packet);
 
-	while (av_read_frame(in_format_ctx, in_packet) == 0) {
-
+		}
 	}
 	// Demuxing: read packet of info from the input format context, only decode if it belongs to the video stream
 	// Decoding: if packet is from video stream, make it into full frame and trigger re-coding only after a full frame is assembled
