@@ -346,7 +346,6 @@ int transcode(const char *in_file, const char *out_file)
 				continue;
 			}
 			frame->pts = av_rescale_q_rnd(frame->pts, in_format_ctx->streams[video_stream_idx]->time_base, video_encoder_ctx->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-			fprintf(stderr, "framepts is %ld\n", frame->pts);
 			frame->pict_type = AV_PICTURE_TYPE_NONE;
 			avcodec_send_frame(video_encoder_ctx, frame);
 			while (avcodec_receive_packet(video_encoder_ctx, video_out_packet) == 0) {
