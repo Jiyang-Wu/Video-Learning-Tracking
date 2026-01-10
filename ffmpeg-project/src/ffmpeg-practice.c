@@ -346,9 +346,14 @@ int transcode(const char *in_file, const char *out_file)
 				continue;
 			}
 			frame->pts = av_rescale_q_rnd(frame->pts, in_format_ctx->streams[video_stream_idx]->time_base, video_encoder_ctx->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+			fprintf(stderr, "framepts is %ld\n", frame->pts);
+			frame->pict_type = AV_PICTURE_TYPE_NONE;
 			avcodec_send_frame(video_encoder_ctx, frame);
 			while (avcodec_receive_packet(video_encoder_ctx, video_out_packet) == 0) {
 				video_out_packet->stream_index = video_stream_idx;
+				video_out_packet->pts = av_rescale_q_rnd(video_out_packet->pts, video_encoder_ctx->time_base, out_format_ctx->streams[video_stream_idx]->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+				video_out_packet->dts = av_rescale_q_rnd(video_out_packet->dts, video_encoder_ctx->time_base, out_format_ctx->streams[video_stream_idx]->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+				video_out_packet->duration = av_rescale_q(video_out_packet->duration, video_encoder_ctx->time_base, out_format_ctx->streams[video_stream_idx]->time_base);
 				av_interleaved_write_frame(out_format_ctx, video_out_packet);
 				av_packet_unref(video_out_packet);
 			}
@@ -360,11 +365,16 @@ int transcode(const char *in_file, const char *out_file)
 	avcodec_send_packet(video_decoder_ctx, NULL);
 	while (avcodec_receive_frame(video_decoder_ctx, frame)) {
 		frame->pts = av_rescale_q_rnd(frame->pts, in_format_ctx->streams[video_stream_idx]->time_base, video_encoder_ctx->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		frame->pict_type = AV_PICTURE_TYPE_NONE;
 		avcodec_send_frame(video_encoder_ctx, frame);
 		av_frame_unref(frame);
 	}
 	avcodec_send_frame(video_encoder_ctx, NULL);
 	while (avcodec_receive_packet(video_encoder_ctx, video_out_packet) == 0) {
+		video_out_packet->stream_index = video_stream_idx;
+		video_out_packet->pts = av_rescale_q_rnd(video_out_packet->pts, video_encoder_ctx->time_base, out_format_ctx->streams[video_stream_idx]->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		video_out_packet->dts = av_rescale_q_rnd(video_out_packet->dts, video_encoder_ctx->time_base, out_format_ctx->streams[video_stream_idx]->time_base, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+		video_out_packet->duration = av_rescale_q(video_out_packet->duration, video_encoder_ctx->time_base, out_format_ctx->streams[video_stream_idx]->time_base);
 		av_interleaved_write_frame(out_format_ctx, video_out_packet);
 		av_packet_unref(video_out_packet);
 	}
